@@ -1,0 +1,86 @@
+WITH new_tags as (
+SELECT DISTINCT
+  product_id AS id, style_id, gender, division,
+  article_type, brand, color, business_unit, master_bu, fit, material, sleeve_type,
+FROM slikk-prod.slikkanalytics.new_taxonomy_product_tags
+),
+
+pp_option_sales AS (
+  SELECT
+    pp.skid AS skid,
+    ANY_VALUE(nt.article_type) AS article_type,
+    SUM(oi.sp * oi.quantity) AS gmv,
+    SUM(oi.quantity) AS qty
+  FROM slikk-prod.slikkprodpublic.order_order oo
+  JOIN slikk-prod.slikkprodpublic.order_orderitem oi ON oo.id = oi.order_id
+  JOIN new_tags nt ON nt.id = oi.product_id
+  JOIN slikk-prod.slikkprodpublic.product_product pp ON pp.id = oi.product_id
+  WHERE oo.status NOT IN ('OPEN','FAILED') AND oo.delivery_type != 'EXCHANGE'
+    AND oo.create_date >= TIMESTAMP('2026-01-01 00:00:00', 'Asia/Kolkata')
+  GROUP BY pp.skid
+),
+pp_option_article_type_sales AS (
+  SELECT skid, article_type, qty AS option_units,
+    SAFE_DIVIDE(gmv, qty) AS price_basis_value,
+    SAFE_DIVIDE(SUM(gmv) OVER (PARTITION BY article_type),
+                SUM(qty) OVER (PARTITION BY article_type)) AS article_type_asp
+  FROM pp_option_sales
+),
+pp_article_type_asp_overall AS (
+  SELECT DISTINCT article_type, article_type_asp FROM pp_option_article_type_sales
+),
+pp_article_type_asp_catalog AS (
+  SELECT nt.article_type, AVG(pp.sp) AS article_type_asp
+  FROM slikk-prod.slikkprodpublic.product_product pp
+  JOIN new_tags nt ON nt.id = pp.id
+  WHERE nt.article_type IS NOT NULL GROUP BY 1
+),
+pp_sold AS (SELECT DISTINCT skid FROM pp_option_sales),
+pp_catalog_base AS (
+  SELECT pp.skid AS skid, ANY_VALUE(nt.article_type) AS article_type, AVG(pp.sp) AS sp
+  FROM slikk-prod.slikkprodpublic.product_product pp
+  JOIN new_tags nt ON nt.id = pp.id GROUP BY 1
+),
+pp_unsold AS (
+  SELECT co.skid, co.article_type, 0 AS option_units,
+    co.sp AS price_basis_value,
+    COALESCE(ato.article_type_asp, atc.article_type_asp) AS article_type_asp
+  FROM pp_catalog_base co
+  LEFT JOIN pp_sold so                      ON so.skid = co.skid
+  LEFT JOIN pp_article_type_asp_overall ato ON ato.article_type = co.article_type
+  LEFT JOIN pp_article_type_asp_catalog atc ON atc.article_type = co.article_type
+  WHERE so.skid IS NULL
+),
+pp_combined AS (
+  SELECT skid, article_type, option_units, price_basis_value, COALESCE(article_type_asp, 0) AS article_type_asp
+  FROM pp_option_article_type_sales
+  UNION ALL
+  SELECT skid, article_type, option_units, price_basis_value, COALESCE(article_type_asp, 0)
+  FROM pp_unsold
+)
+SELECT DISTINCT skid, article_type, price_point, price_point_threshold
+FROM (
+  SELECT skid, article_type,
+    CASE
+      WHEN p70 = p120 AND p120 = p170 THEN 'E'
+      WHEN price_basis_value >= p170 THEN 'P'
+      WHEN price_basis_value >= p120 AND price_basis_value < p170 THEN 'MP'
+      WHEN price_basis_value >= p70  AND price_basis_value < p120 THEN 'M'
+      ELSE 'E'
+    END AS price_point,
+    CASE
+      WHEN p70 = p120 AND p120 = p170            THEN CONCAT('<', p70)
+      WHEN price_basis_value >= p170              THEN CONCAT('>', p170)
+      WHEN price_basis_value >= p120 AND price_basis_value < p170 THEN CONCAT(p120, ' to ', p170)
+      WHEN price_basis_value >= p70  AND price_basis_value < p120 THEN CONCAT(p70, ' to ', p120)
+      ELSE CONCAT('<', p70)
+    END AS price_point_threshold
+  FROM (
+    SELECT skid, article_type, price_basis_value,
+      GREATEST(CAST(ROUND(0.7 * article_type_asp, -2) AS INT64), 100) AS p70,
+      GREATEST(CAST(ROUND(1.2 * article_type_asp, -2) AS INT64), 100) AS p120,
+      GREATEST(CAST(ROUND(1.7 * article_type_asp, -2) AS INT64), 100) AS p170
+    FROM pp_combined
+  )
+)
+WHERE price_point = 'P';
