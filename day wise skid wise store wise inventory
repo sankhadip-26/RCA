@@ -1,0 +1,43 @@
+WITH accessories_skids AS (
+  SELECT DISTINCT LOWER(pp.skid) AS skid
+  FROM `slikk-prod.slikkprodpublic.product_product` pp
+  JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+    ON nt.product_id = pp.id
+  WHERE UPPER(nt.division) = 'ACCESSORIES'
+),
+
+daily_inventory AS (
+  SELECT
+    inv.create_date,
+    LOWER(inv.skid) AS skid,
+    inv.store_code,
+    SUM(inv.quantity) AS total_inventory
+  FROM `slikk-prod.slikkprodpublic.product_inventorysnapshot` inv
+  JOIN accessories_skids a
+    ON LOWER(inv.skid) = a.skid
+  WHERE inv.create_date >= DATE '2026-10-01'
+    AND inv.create_date < DATE '2026-11-01'
+  GROUP BY
+    inv.create_date,
+    LOWER(inv.skid),
+    inv.store_code
+)
+
+SELECT *
+FROM daily_inventory
+PIVOT (
+  SUM(total_inventory) FOR store_code IN (
+    'slikk105' AS slikk105,
+    'slikk201' AS slikk201,
+    'slikk106' AS slikk106,
+    'slikk103' AS slikk103,
+    'DHLBLR101' AS DHLBLR101,
+    'slikk101' AS slikk101,
+    'spro101' AS spro101,
+    'Marketing' AS Marketing,
+    'Slikk107' AS Slikk107,
+    'slikk102' AS slikk102,
+    'slikk104' AS slikk104
+  )
+)
+ORDER BY create_date, skid;
