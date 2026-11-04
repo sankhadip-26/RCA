@@ -1,6 +1,7 @@
 WITH inventory_base AS (
   SELECT
     inv.create_date,
+    LOWER(inv.store_code) AS store_code,
     pp.id AS product_id,
     inv.quantity
   FROM `slikk-prod.slikkprodpublic.product_inventorysnapshot` inv
@@ -26,7 +27,21 @@ daily_inventory AS (
     i.create_date,
     nt.article_type,
     nt.brand,
-    SUM(i.quantity) AS total_inventory
+    SUM(i.quantity) AS total_inventory,
+    SUM(
+      IF(
+        i.store_code IN (
+          'slikk105',
+          'slikk106',
+          'slikk103',
+          'slikk101',
+          'slikk107',
+          'slikk104'
+        ),
+        i.quantity,
+        0
+      )
+    ) AS dark_store_inventory
   FROM inventory_base i
   JOIN product_tags nt
     ON nt.product_id = i.product_id
@@ -39,7 +54,9 @@ daily_inventory AS (
 SELECT *
 FROM daily_inventory
 PIVOT (
-  SUM(total_inventory) FOR create_date IN (
+  SUM(total_inventory) AS total_inventory,
+  SUM(dark_store_inventory) AS dark_store_inventory
+  FOR create_date IN (
     DATE '2026-10-01' AS Oct_01,
     DATE '2026-10-02' AS Oct_02,
     DATE '2026-10-03' AS Oct_03,
