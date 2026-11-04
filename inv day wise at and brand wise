@@ -1,0 +1,76 @@
+WITH inventory_base AS (
+  SELECT
+    inv.create_date,
+    pp.id AS product_id,
+    inv.quantity
+  FROM `slikk-prod.slikkprodpublic.product_inventorysnapshot` inv
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON LOWER(inv.skid) = LOWER(pp.skid)
+  WHERE inv.create_date >= DATE '2026-10-01'
+    AND inv.create_date < DATE '2026-11-01'
+),
+
+product_tags AS (
+  SELECT DISTINCT
+    product_id,
+    article_type,
+    brand
+  FROM `slikk-prod.slikkanalytics.silver_new_product_tags`
+  WHERE UPPER(division) = 'ACCESSORIES'
+    AND article_type IS NOT NULL
+    AND brand IS NOT NULL
+),
+
+daily_inventory AS (
+  SELECT
+    i.create_date,
+    nt.article_type,
+    nt.brand,
+    SUM(i.quantity) AS total_inventory
+  FROM inventory_base i
+  JOIN product_tags nt
+    ON nt.product_id = i.product_id
+  GROUP BY
+    i.create_date,
+    nt.article_type,
+    nt.brand
+)
+
+SELECT *
+FROM daily_inventory
+PIVOT (
+  SUM(total_inventory) FOR create_date IN (
+    DATE '2026-10-01' AS Oct_01,
+    DATE '2026-10-02' AS Oct_02,
+    DATE '2026-10-03' AS Oct_03,
+    DATE '2026-10-04' AS Oct_04,
+    DATE '2026-10-05' AS Oct_05,
+    DATE '2026-10-06' AS Oct_06,
+    DATE '2026-10-07' AS Oct_07,
+    DATE '2026-10-08' AS Oct_08,
+    DATE '2026-10-09' AS Oct_09,
+    DATE '2026-10-10' AS Oct_10,
+    DATE '2026-10-11' AS Oct_11,
+    DATE '2026-10-12' AS Oct_12,
+    DATE '2026-10-13' AS Oct_13,
+    DATE '2026-10-14' AS Oct_14,
+    DATE '2026-10-15' AS Oct_15,
+    DATE '2026-10-16' AS Oct_16,
+    DATE '2026-10-17' AS Oct_17,
+    DATE '2026-10-18' AS Oct_18,
+    DATE '2026-10-19' AS Oct_19,
+    DATE '2026-10-20' AS Oct_20,
+    DATE '2026-10-21' AS Oct_21,
+    DATE '2026-10-22' AS Oct_22,
+    DATE '2026-10-23' AS Oct_23,
+    DATE '2026-10-24' AS Oct_24,
+    DATE '2026-10-25' AS Oct_25,
+    DATE '2026-10-26' AS Oct_26,
+    DATE '2026-10-27' AS Oct_27,
+    DATE '2026-10-28' AS Oct_28,
+    DATE '2026-10-29' AS Oct_29,
+    DATE '2026-10-30' AS Oct_30,
+    DATE '2026-10-31' AS Oct_31
+  )
+)
+ORDER BY article_type, brand;
