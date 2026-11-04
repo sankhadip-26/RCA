@@ -1,0 +1,103 @@
+WITH new_tags AS (
+  SELECT DISTINCT
+    product_id AS id,
+    article_type,
+    LOWER(TRIM(brand)) AS brand
+  FROM `slikk-prod.slikkanalytics.new_taxonomy_product_tags`
+  WHERE article_type IS NOT NULL
+    AND brand IS NOT NULL
+    AND TRIM(brand) != ''
+),
+
+brand_sales AS (
+  SELECT
+    nt.article_type,
+    nt.brand,
+    SUM(oi.sp * oi.quantity) AS gmv,
+    SUM(oi.quantity) AS qty
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+  JOIN new_tags nt
+    ON nt.id = oi.product_id
+  WHERE oo.status NOT IN ('OPEN', 'FAILED')
+    AND oo.delivery_type != 'EXCHANGE'
+    AND oo.create_date >= TIMESTAMP(
+      '2026-01-01 00:00:00', 'Asia/Kolkata'
+    )
+  GROUP BY
+    nt.article_type,
+    nt.brand
+),
+
+article_type_asp AS (
+  SELECT
+    article_type,
+    SAFE_DIVIDE(SUM(gmv), SUM(qty)) AS article_type_asp
+  FROM brand_sales
+  GROUP BY article_type
+),
+
+brand_asp AS (
+  SELECT
+    article_type,
+    brand,
+    SAFE_DIVIDE(gmv, qty) AS brand_asp
+  FROM brand_sales
+),
+
+classified AS (
+  SELECT
+    article_type,
+    brand,
+    brand_asp,
+    CASE
+      WHEN p70 = p120 AND p120 = p170 THEN 'E'
+      WHEN brand_asp >= p170 THEN 'P'
+      WHEN brand_asp >= p120 THEN 'MP'
+      WHEN brand_asp >= p70 THEN 'M'
+      ELSE 'E'
+    END AS price_point
+  FROM (
+    SELECT
+      b.article_type,
+      b.brand,
+      b.brand_asp,
+      GREATEST(
+        CAST(ROUND(0.7 * a.article_type_asp, -2) AS INT64),
+        100
+      ) AS p70,
+      GREATEST(
+        CAST(ROUND(1.2 * a.article_type_asp, -2) AS INT64),
+        100
+      ) AS p120,
+      GREATEST(
+        CAST(ROUND(1.7 * a.article_type_asp, -2) AS INT64),
+        100
+      ) AS p170
+    FROM brand_asp b
+    JOIN article_type_asp a
+      USING (article_type)
+  )
+)
+
+SELECT
+  article_type,
+  price_point,
+  COUNT(DISTINCT brand) AS brand_count,
+  STRING_AGG(
+    DISTINCT brand,
+    ', ' ORDER BY brand
+  ) AS brand_names
+FROM classified
+GROUP BY
+  article_type,
+  price_point
+ORDER BY
+  article_type,
+  CASE price_point
+    WHEN 'E' THEN 1
+    WHEN 'M' THEN 2
+    WHEN 'MP' THEN 3
+    WHEN 'P' THEN 4
+  END;
