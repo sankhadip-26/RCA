@@ -9,6 +9,14 @@ WITH inventory_base AS (
     ON LOWER(inv.skid) = LOWER(pp.skid)
   WHERE inv.create_date >= DATE '2026-10-01'
     AND inv.create_date < DATE '2026-11-01'
+    AND LOWER(inv.store_code) IN (
+      'slikk105',
+      'slikk106',
+      'slikk103',
+      'slikk101',
+      'slikk107',
+      'slikk104'
+    )
 ),
 
 product_tags AS (
