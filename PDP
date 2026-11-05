@@ -17,22 +17,27 @@ WITH pdp_by_product AS (
 SELECT
   p.create_date,
   nt.division,
-  nt.brand,
+  pb.name AS brand,
   nt.gender,
   nt.article_type,
   SUM(p.pdp_views) AS pdp_views
 FROM pdp_by_product p
 LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
   ON nt.product_id = p.product_id
+LEFT JOIN `slikk-prod.slikkprodpublic.product_product` pp
+  ON pp.id = p.product_id
+LEFT JOIN `slikk-prod.slikkprodpublic.product_brand` pb
+  ON pb.id = pp.brand_id
+WHERE LOWER(pb.name) = 'biba'
 GROUP BY
   p.create_date,
   nt.division,
-  nt.brand,
+  pb.name,
   nt.gender,
   nt.article_type
 ORDER BY
   p.create_date,
   nt.division,
-  nt.brand,
+  pb.name,
   nt.gender,
   nt.article_type;
