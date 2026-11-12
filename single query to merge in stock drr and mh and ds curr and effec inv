@@ -1,0 +1,473 @@
+
+WITH
+-- 1. Current inventory, preserving the original inventory grain and joins
+inventory_agg AS (
+  SELECT
+    pi.product_id,
+    pp.sku,
+    sc.code AS company_code,
+    pt.Brand,
+    pt.fashion_style,
+    pt.category,
+    pt.division,
+    pt.article_type,
+    pt.subcategory,
+    pt.gender,
+    pp.size,
+    pt.product_type,
+    pp.variant_id AS style_code,
+
+    SUM(IF(ss.code = 'slikk102', pi.quantity, NULL)) AS current_quantity_in_slikk102,
+    SUM(IF(ss.code = 'slikk103', pi.quantity, NULL)) AS current_quantity_in_slikk103,
+    SUM(IF(ss.code = 'slikk104', pi.quantity, NULL)) AS current_quantity_in_slikk104,
+    SUM(IF(ss.code = 'slikk101', pi.quantity, NULL)) AS current_quantity_in_slikk101,
+    SUM(IF(ss.code = 'slikk105', pi.quantity, NULL)) AS current_quantity_in_slikk105,
+    SUM(IF(ss.code = 'slikk106', pi.quantity, NULL)) AS current_quantity_in_slikk106,
+    SUM(IF(ss.code = 'DHLBLR101', pi.quantity, NULL)) AS current_quantity_in_dhl,
+    SUM(IF(ss.code = 'Slikk107', pi.quantity, NULL)) AS current_quantity_in_slikk107
+
+  FROM `slikk-prod.slikkprodpublic.product_inventory` pi
+  JOIN `slikk-prod.slikkprodpublic.store_store` ss
+    ON pi.store_id = ss.id
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = pi.product_id
+  JOIN `slikk-prod.slikkprodpublic.store_company` sc
+    ON pp.company_id = sc.id
+  JOIN `slikk-prod.slikkprodpublic.product_brand` pb
+    ON pb.id = pp.brand_id
+  JOIN `slikk-prod.slikksilver.product_tags` pt
+    ON pt.product_id = pi.product_id
+
+  GROUP BY ALL
+),
+
+-- 2. QC aggregation for in-transit calculation
+qc_agg AS (
+  SELECT
+    gdn.indent_note_id,
+    qc.sku,
+    qc.company_id,
+    grn.store_id,
+    SUM(qc.qc_passed) AS qc_passed
+  FROM `slikk-prod.slikkprodpublic.product_goodsqualitycheck` qc
+  JOIN `slikk-prod.slikkprodpublic.product_goodsreceivednote` grn
+    ON qc.grn_id = grn.id
+  JOIN `slikk-prod.slikkprodpublic.product_goodsshipment` sh
+    ON grn.shipment_id = COALESCE(sh.parent_shipment_id, sh.id)
+  JOIN `slikk-prod.slikkprodpublic.product_goodsdispatchnote` gdn
+    ON sh.gdn_id = gdn.id
+  GROUP BY 1, 2, 3, 4
+),
+
+-- 3. In-transit stock, preserving original source and join conditions
+in_transit_summary AS (
+  SELECT
+    sku,
+    LOWER(company_code) AS company_code,
+
+    SUM(IF(target_store = 'slikk101',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_slikk101,
+
+    SUM(IF(target_store = 'slikk102',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_slikk102,
+
+    SUM(IF(target_store = 'slikk103',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_slikk103,
+
+    SUM(IF(target_store = 'slikk104',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_slikk104,
+
+    SUM(IF(target_store = 'slikk105',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_slikk105,
+
+    SUM(IF(target_store = 'slikk106',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_slikk106,
+
+    SUM(IF(target_store = 'DHLBLR101',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_dhl,
+
+    SUM(IF(target_store = 'Slikk107',
+      in_transit_yet_to_pick + in_transit_yet_to_inward, 0
+    )) AS in_transit_qty_in_slikk107
+
+  FROM (
+    SELECT
+      i.sku,
+      LOWER(sc.code) AS company_code,
+      target_store.code AS target_store,
+
+      SUM(
+        CASE
+          WHEN LOWER(inote.status) = 'fulfilled' THEN 0
+          ELSE GREATEST(i.synced_quantity - i.quantity_accepted, 0)
+        END
+      ) AS in_transit_yet_to_pick,
+
+      SUM(
+        CASE
+          WHEN DATE(inote.create_date + INTERVAL 330 MINUTE)
+            >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 2 MONTH)
+          THEN GREATEST(i.quantity_accepted - COALESCE(qc.qc_passed, 0), 0)
+          ELSE 0
+        END
+      ) AS in_transit_yet_to_inward
+
+    FROM `slikk-prod.slikkprodpublic.product_intentnoteitem` i
+    JOIN `slikk-prod.slikkprodpublic.product_intentnote` inote
+      ON i.intent_note_id = inote.id
+    JOIN `slikk-prod.slikkprodpublic.store_company` sc
+      ON i.company_id = sc.id
+    JOIN `slikk-prod.slikkprodpublic.store_store` source_store
+      ON source_store.id = inote.source_store_id
+    JOIN `slikk-prod.slikkprodpublic.store_store` target_store
+      ON target_store.id = inote.target_store_id
+    LEFT JOIN qc_agg qc
+      ON qc.indent_note_id = i.intent_note_id
+      AND qc.sku = i.sku
+      AND qc.company_id = i.company_id
+      AND qc.store_id = inote.target_store_id
+
+    WHERE LOWER(inote.status) NOT IN ('rejected', 'draft')
+    GROUP BY ALL
+  ) a
+
+  GROUP BY ALL
+
+  HAVING
+    SUM(in_transit_yet_to_pick) + SUM(in_transit_yet_to_inward) > 0
+),
+
+-- 4. Preserve the original FULL OUTER JOIN between inventory and transit
+inv_agg_final AS (
+  SELECT
+    i.*,
+    its.* EXCEPT (sku, company_code)
+  FROM inventory_agg i
+  FULL OUTER JOIN in_transit_summary its
+    ON i.sku = its.sku
+    AND LOWER(i.company_code) = its.company_code
+),
+
+-- 5. Original base only needs inventory fields for the final stock output.
+-- The original orders/split-order calculations only produced unused sales
+-- metrics; they did not affect the stock aggregates.
+base AS (
+  SELECT *
+  FROM inv_agg_final
+),
+
+-- 6. Retain the original DRR-table join because duplicate matches can
+-- affect the number of rows contributing to the final stock SUM.
+calc AS (
+  SELECT b.*
+  FROM base b
+  LEFT JOIN `slikk-prod.slikkanalytics.instock_drr_306090days` d
+    ON b.sku = d.sku
+    AND LOWER(b.company_code) = LOWER(d.company_code)
+),
+
+-- 7. Effective inventory calculations used in the original output
+req AS (
+  SELECT
+    c.*,
+
+    COALESCE(current_quantity_in_slikk102, 0)
+      + COALESCE(in_transit_qty_in_slikk102, 0) AS effective_inv_102,
+
+    COALESCE(current_quantity_in_slikk101, 0)
+      + COALESCE(in_transit_qty_in_slikk101, 0) AS effective_inv_101,
+
+    COALESCE(current_quantity_in_slikk103, 0)
+      + COALESCE(in_transit_qty_in_slikk103, 0) AS effective_inv_103,
+
+    COALESCE(current_quantity_in_slikk104, 0)
+      + COALESCE(in_transit_qty_in_slikk104, 0) AS effective_inv_104,
+
+    COALESCE(current_quantity_in_slikk105, 0)
+      + COALESCE(in_transit_qty_in_slikk105, 0) AS effective_inv_105,
+
+    COALESCE(current_quantity_in_slikk106, 0)
+      + COALESCE(in_transit_qty_in_slikk106, 0) AS effective_inv_106,
+
+    COALESCE(current_quantity_in_slikk107, 0)
+      + COALESCE(in_transit_qty_in_slikk107, 0) AS effective_inv_107,
+
+    COALESCE(current_quantity_in_dhl, 0)
+      + COALESCE(in_transit_qty_in_dhl, 0) AS effective_inv_dhl
+
+  FROM calc c
+),
+
+-- 8. Original new-tags mapping
+new_tags AS (
+  SELECT
+    pp.sku,
+    LOWER(sc.code) AS company_code,
+    MAX(nt.division) AS division,
+    MAX(nt.category) AS category,
+    MAX(nt.article_type) AS article_type,
+    MAX(nt.business_unit) AS business_unit,
+    MAX(nt.master_bu) AS master_bu
+
+  FROM `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+  LEFT JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON nt.product_id = pp.id
+  LEFT JOIN `slikk-prod.slikkprodpublic.store_company` sc
+    ON sc.id = pp.company_id
+
+  GROUP BY ALL
+),
+
+-- 9. Motherhub and dark-store stock output
+stock_output AS (
+  SELECT
+    nt.division,
+    req.Brand AS brand,
+    req.style_code,
+    req.sku,
+    LOWER(req.company_code) AS company_code,
+
+    SUM(
+      COALESCE(req.current_quantity_in_slikk102, 0)
+      + COALESCE(req.current_quantity_in_dhl, 0)
+    ) AS motherhub_current_stock,
+
+    SUM(
+      COALESCE(req.effective_inv_102, 0)
+      + COALESCE(req.effective_inv_dhl, 0)
+    ) AS motherhub_effective_stock,
+
+    SUM(
+      COALESCE(req.current_quantity_in_slikk101, 0)
+      + COALESCE(req.current_quantity_in_slikk103, 0)
+      + COALESCE(req.current_quantity_in_slikk104, 0)
+      + COALESCE(req.current_quantity_in_slikk105, 0)
+      + COALESCE(req.current_quantity_in_slikk106, 0)
+      + COALESCE(req.current_quantity_in_slikk107, 0)
+    ) AS dark_store_current_stock,
+
+    SUM(
+      COALESCE(req.effective_inv_101, 0)
+      + COALESCE(req.effective_inv_103, 0)
+      + COALESCE(req.effective_inv_104, 0)
+      + COALESCE(req.effective_inv_105, 0)
+      + COALESCE(req.effective_inv_106, 0)
+      + COALESCE(req.effective_inv_107, 0)
+    ) AS dark_store_effective_stock
+
+  FROM req
+  LEFT JOIN new_tags nt
+    ON nt.sku = req.sku
+    AND LOWER(nt.company_code) = LOWER(req.company_code)
+
+  GROUP BY
+    nt.division,
+    req.Brand,
+    req.style_code,
+    req.sku,
+    company_code
+),
+
+-- 10. In-stock DRR: original inventory snapshot source and aggregation
+sku_in_stock_days AS (
+  SELECT
+    sku,
+    company_code,
+    create_date,
+    store_code,
+    SUM(quantity) AS qty
+
+  FROM `slikk-prod.slikkprodpublic.product_inventorysnapshot`
+
+  WHERE create_date >= DATE_SUB(
+      CURRENT_DATE('Asia/Kolkata'), INTERVAL 90 DAY
+    )
+    AND create_date < CURRENT_DATE('Asia/Kolkata')
+
+  GROUP BY 1, 2, 3, 4
+),
+
+-- 11. In-stock DRR: original sales source and filters
+sales AS (
+  SELECT
+    pp.sku AS sku,
+    sc.code AS company_code,
+    DATE(oo.create_date + INTERVAL 330 MINUTE) AS order_date,
+    LOWER(ss.code) AS store_code,
+    SUM(oi.quantity) AS qty_ordered
+
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = oi.product_id
+  JOIN `slikk-prod.slikkprodpublic.store_company` sc
+    ON sc.id = pp.company_id
+  JOIN `slikk-prod.slikkprodpublic.store_store` ss
+    ON ss.id = oo.store_id
+
+  WHERE oo.delivery_type != 'EXCHANGE'
+    AND oo.status NOT IN ('OPEN', 'FAILED')
+    AND DATE(oo.create_date + INTERVAL 330 MINUTE)
+      >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 90 DAY)
+    AND DATE(oo.create_date + INTERVAL 330 MINUTE)
+      < CURRENT_DATE('Asia/Kolkata')
+
+  GROUP BY 1, 2, 3, 4
+),
+
+-- 12. Preserve the original FULL OUTER JOIN and exact store-code matching
+sku_store_days AS (
+  SELECT
+    COALESCE(s.sku, i.sku) AS sku,
+    COALESCE(s.company_code, i.company_code) AS company_code,
+    COALESCE(s.order_date, i.create_date) AS day,
+    COALESCE(i.qty, 0) AS inv_qty,
+    COALESCE(s.qty_ordered, 0) AS sold_qty,
+    COALESCE(s.store_code, i.store_code) AS store_code
+
+  FROM sales s
+  FULL OUTER JOIN sku_in_stock_days i
+    ON s.sku = i.sku
+    AND LOWER(s.company_code) = LOWER(i.company_code)
+    AND s.order_date = i.create_date
+    AND s.store_code = i.store_code
+),
+
+-- 13. Collapse stores to one active-day flag per SKU and date
+sku_day AS (
+  SELECT
+    sku,
+    company_code,
+    day,
+    SUM(sold_qty) AS sold_qty,
+    MAX(IF(inv_qty > 0 OR sold_qty > 0, 1, 0)) AS active_day_flag
+
+  FROM sku_store_days
+  GROUP BY 1, 2, 3
+),
+
+-- 14. Original 7/30/60/90-day quantity and active-day calculations
+sku_drr AS (
+  SELECT
+    sku,
+    company_code,
+
+    SUM(IF(day >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 7 DAY),
+      sold_qty, 0
+    )) AS qty_7d,
+
+    SUM(IF(day >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 7 DAY),
+      active_day_flag, 0
+    )) AS active_days_7d,
+
+    SUM(IF(day >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 30 DAY),
+      sold_qty, 0
+    )) AS qty_30d,
+
+    SUM(IF(day >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 30 DAY),
+      active_day_flag, 0
+    )) AS active_days_30d,
+
+    SUM(IF(day >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 60 DAY),
+      sold_qty, 0
+    )) AS qty_60d,
+
+    SUM(IF(day >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 60 DAY),
+      active_day_flag, 0
+    )) AS active_days_60d,
+
+    SUM(sold_qty) AS qty_90d,
+    SUM(active_day_flag) AS active_days_90d
+
+  FROM sku_day
+  GROUP BY 1, 2
+),
+
+-- 15. Calculate DRR using the original formula
+drr_output AS (
+  SELECT
+    sku,
+    company_code,
+
+    qty_7d,
+    active_days_7d,
+    ROUND(
+      SAFE_DIVIDE(qty_7d, active_days_7d)
+      * IF(active_days_7d <= 3, 0.5, 1), 2
+    ) AS overall_instock_drr_7d,
+
+    qty_30d,
+    active_days_30d,
+    ROUND(
+      SAFE_DIVIDE(qty_30d, active_days_30d)
+      * IF(active_days_30d <= 3, 0.5, 1), 2
+    ) AS overall_instock_drr_30d,
+
+    qty_60d,
+    active_days_60d,
+    ROUND(
+      SAFE_DIVIDE(qty_60d, active_days_60d)
+      * IF(active_days_60d <= 3, 0.5, 1), 2
+    ) AS overall_instock_drr_60d,
+
+    qty_90d,
+    active_days_90d,
+    ROUND(
+      SAFE_DIVIDE(qty_90d, active_days_90d)
+      * IF(active_days_90d <= 3, 0.5, 1), 2
+    ) AS overall_instock_drr_90d
+
+  FROM sku_drr
+)
+
+-- 16. Merge both original outputs by SKU and company
+SELECT
+  COALESCE(s.division, nt.division) AS division,
+  s.brand,
+  s.style_code,
+  COALESCE(s.sku, d.sku) AS sku,
+  COALESCE(s.company_code, d.company_code) AS company_code,
+
+  s.motherhub_current_stock,
+  s.motherhub_effective_stock,
+  s.dark_store_current_stock,
+  s.dark_store_effective_stock,
+
+  d.qty_7d,
+  d.active_days_7d,
+  d.overall_instock_drr_7d,
+
+  d.qty_30d,
+  d.active_days_30d,
+  d.overall_instock_drr_30d,
+
+  d.qty_60d,
+  d.active_days_60d,
+  d.overall_instock_drr_60d,
+
+  d.qty_90d,
+  d.active_days_90d,
+  d.overall_instock_drr_90d
+
+FROM stock_output s
+FULL OUTER JOIN drr_output d
+  ON s.sku = d.sku
+  AND LOWER(s.company_code) = LOWER(d.company_code)
+
+LEFT JOIN new_tags nt
+  ON nt.sku = d.sku
+  AND LOWER(nt.company_code) = LOWER(d.company_code)
+
+ORDER BY
+  division,
+  brand,
+  style_code,
+  sku;
