@@ -1,0 +1,51 @@
+
+WITH date_range AS (
+  SELECT
+    DATE '2026-09-01' AS start_date,
+    DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 1 DAY) AS end_date
+),
+
+base AS (
+  SELECT
+    DATE(oo.create_date, 'Asia/Kolkata') AS order_date,
+    nt.article_type AS article_type,
+    SAFE_CAST(oi.quantity AS NUMERIC) AS quantity
+
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = oi.product_id
+
+  JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+    ON nt.product_id = pp.id
+
+  CROSS JOIN date_range d
+
+  WHERE
+    oo.status NOT IN ('OPEN', 'FAILED')
+    AND oo.delivery_type != 'EXCHANGE'
+    AND DATE(oo.create_date, 'Asia/Kolkata')
+        BETWEEN d.start_date AND d.end_date
+    AND UPPER(TRIM(nt.division)) = 'APPAREL'
+    AND UPPER(TRIM(nt.gender)) IN ('WOMEN', 'WOMENS')
+)
+
+SELECT
+  article_type,
+
+  SUM(IF(order_date BETWEEN DATE '2026-09-01' AND DATE '2026-09-30',
+         quantity, 0)) AS sep_qty,
+
+  SUM(IF(order_date BETWEEN DATE '2026-10-01' AND DATE '2026-10-31',
+         quantity, 0)) AS oct_qty,
+
+  SUM(IF(order_date BETWEEN DATE '2026-11-01'
+         AND CURRENT_DATE('Asia/Kolkata') - 1,
+         quantity, 0)) AS nov_mtd_qty
+
+FROM base
+GROUP BY article_type
+ORDER BY article_type;
