@@ -1,0 +1,98 @@
+
+WITH date_range AS (
+  SELECT
+    DATE '2025-11-01' AS start_date,
+    DATE '2026-10-31' AS end_date
+),
+
+base AS (
+  SELECT
+    DATE_TRUNC(DATE(oo.create_date, 'Asia/Kolkata'), MONTH) AS order_month,
+    COALESCE(pb.name, 'NA') AS brand,
+    SAFE_CAST(oi.quantity AS NUMERIC) AS quantity,
+    SAFE_CAST(oi.sp AS NUMERIC) AS sp_num
+
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = oi.product_id
+
+  JOIN `slikk-prod.slikkprodpublic.product_brand` pb
+    ON pb.id = pp.brand_id
+
+  JOIN `slikk-prod.slikksilver.product_tags` pt
+    ON pt.product_id = pp.id
+
+  LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+    ON nt.product_id = pp.id
+
+  CROSS JOIN date_range d
+
+  WHERE
+    oo.status NOT IN ('OPEN', 'FAILED')
+    AND oo.delivery_type != 'EXCHANGE'
+    AND DATE(oo.create_date, 'Asia/Kolkata')
+        BETWEEN d.start_date AND d.end_date
+    AND UPPER(TRIM(nt.division)) = 'HOME'
+),
+
+monthly_gmv AS (
+  SELECT
+    brand,
+    order_month,
+    SUM(sp_num * quantity) AS gmv
+  FROM base
+  GROUP BY
+    brand,
+    order_month
+),
+
+brand_totals AS (
+  SELECT
+    brand,
+    SUM(gmv) AS total_gmv
+  FROM monthly_gmv
+  GROUP BY brand
+),
+
+top_10_brands AS (
+  SELECT
+    brand,
+    total_gmv
+  FROM brand_totals
+  ORDER BY total_gmv DESC
+  LIMIT 15
+)
+
+SELECT
+  t.brand,
+
+  ROUND(SUM(IF(m.order_month = DATE '2025-11-01', m.gmv, 0)) / 100000, 2) AS Nov_2025,
+  ROUND(SUM(IF(m.order_month = DATE '2025-12-01', m.gmv, 0)) / 100000, 2) AS Dec_2025,
+  ROUND(SUM(IF(m.order_month = DATE '2026-01-01', m.gmv, 0)) / 100000, 2) AS Jan_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-02-01', m.gmv, 0)) / 100000, 2) AS Feb_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-03-01', m.gmv, 0)) / 100000, 2) AS Mar_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-04-01', m.gmv, 0)) / 100000, 2) AS Apr_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-05-01', m.gmv, 0)) / 100000, 2) AS May_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-06-01', m.gmv, 0)) / 100000, 2) AS Jun_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-07-01', m.gmv, 0)) / 100000, 2) AS Jul_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-08-01', m.gmv, 0)) / 100000, 2) AS Aug_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-09-01', m.gmv, 0)) / 100000, 2) AS Sep_2026,
+  ROUND(SUM(IF(m.order_month = DATE '2026-10-01', m.gmv, 0)) / 100000, 2) AS Oct_2026,
+
+  ROUND(t.total_gmv / 100000, 2) AS total_gmv
+
+FROM top_10_brands t
+
+LEFT JOIN monthly_gmv m
+  ON m.brand = t.brand
+
+GROUP BY
+  t.brand,
+  t.total_gmv
+
+ORDER BY
+  t.total_gmv DESC;
