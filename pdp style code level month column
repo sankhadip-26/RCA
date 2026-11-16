@@ -1,0 +1,95 @@
+WITH product_mapping AS (
+  SELECT
+    event_product_id,
+    product_id
+  FROM (
+    SELECT
+      LOWER(e.product_id) AS event_product_id,
+      pp.id AS product_id,
+
+      ROW_NUMBER() OVER (
+        PARTITION BY LOWER(e.product_id)
+        ORDER BY
+          CASE
+            WHEN LOWER(e.product_id) = LOWER(pp.skid) THEN 1
+            WHEN LOWER(e.product_id) = LOWER(pp.sku) THEN 2
+            WHEN LOWER(e.product_id) = LOWER(pp.barcode) THEN 3
+          END,
+          pp.id
+      ) AS rn
+
+    FROM (
+      SELECT DISTINCT product_id
+      FROM `slikk-prod.slikksilver.silver_pdp_events`
+      WHERE
+        create_date >= DATE '2026-09-01'
+        AND create_date < CURRENT_DATE('Asia/Kolkata')
+        AND product_id IS NOT NULL
+    ) e
+
+    JOIN `slikk-prod.slikkprodpublic.product_product` pp
+      ON LOWER(e.product_id) = LOWER(pp.skid)
+      OR LOWER(e.product_id) = LOWER(pp.sku)
+      OR LOWER(e.product_id) = LOWER(pp.barcode)
+  )
+  WHERE rn = 1
+),
+
+pdp_by_product AS (
+  SELECT
+    e.create_date,
+    pm.product_id,
+    COUNT(*) AS pdp_views
+
+  FROM `slikk-prod.slikksilver.silver_pdp_events` e
+
+  LEFT JOIN product_mapping pm
+    ON LOWER(e.product_id) = pm.event_product_id
+
+  WHERE
+    e.create_date >= DATE '2026-09-01'
+    AND e.create_date < CURRENT_DATE('Asia/Kolkata')
+
+  GROUP BY
+    e.create_date,
+    pm.product_id
+)
+
+SELECT
+  pp.variant_id AS style_code,
+
+  SUM(IF(
+    p.create_date >= DATE '2026-09-01'
+    AND p.create_date < DATE '2026-10-01',
+    p.pdp_views, 0
+  )) AS Sep,
+
+  SUM(IF(
+    p.create_date >= DATE '2026-10-01'
+    AND p.create_date < DATE '2026-11-01',
+    p.pdp_views, 0
+  )) AS Oct,
+
+  SUM(IF(
+    p.create_date >= DATE '2026-11-01'
+    AND p.create_date < CURRENT_DATE('Asia/Kolkata'),
+    p.pdp_views, 0
+  )) AS Nov_MTD
+
+FROM pdp_by_product p
+
+LEFT JOIN `slikk-prod.slikkprodpublic.product_product` pp
+  ON pp.id = p.product_id
+
+LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+  ON nt.product_id = p.product_id
+
+WHERE
+  UPPER(TRIM(nt.division)) = 'APPAREL'
+  AND UPPER(TRIM(nt.gender)) IN ('WOMEN', 'WOMENS')
+
+GROUP BY
+  pp.variant_id
+
+ORDER BY
+  pp.variant_id;
