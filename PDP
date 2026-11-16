@@ -48,6 +48,7 @@ pdp_by_product AS (
 
   WHERE
     e.create_date >= DATE '2026-10-01'
+    and e.create_date < Date '2026-11-16'
 
   GROUP BY
     e.create_date,
