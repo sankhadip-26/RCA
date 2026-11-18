@@ -1,0 +1,171 @@
+
+WITH date_range AS (
+  SELECT
+    DATE '2026-09-01' AS start_date,
+    DATE '2026-11-01' AS nov_start_date,
+    DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 1 DAY) AS end_date
+),
+
+-- Combine PDP and Add-to-Cart events
+all_events AS (
+  SELECT
+    'PDP' AS event_type,
+    LOWER(product_id) AS event_product_id,
+    create_date AS event_date
+  FROM `slikk-prod.slikksilver.silver_pdp_events`
+  CROSS JOIN date_range d
+  WHERE
+    create_date >= d.start_date
+    AND create_date <= d.end_date
+    AND product_id IS NOT NULL
+
+  UNION ALL
+
+  SELECT
+    'ATC' AS event_type,
+    LOWER(product_id) AS event_product_id,
+    create_date AS event_date
+  FROM `slikk-prod.slikksilver.silver_add_to_cart_events`
+  CROSS JOIN date_range d
+  WHERE
+    create_date >= d.start_date
+    AND create_date <= d.end_date
+    AND product_id IS NOT NULL
+),
+
+-- Map event product IDs to product table IDs
+product_mapping AS (
+  SELECT
+    event_product_id,
+    product_id
+  FROM (
+    SELECT
+      e.event_product_id,
+      pp.id AS product_id,
+
+      ROW_NUMBER() OVER (
+        PARTITION BY e.event_product_id
+        ORDER BY
+          CASE
+            WHEN e.event_product_id = LOWER(pp.skid) THEN 1
+            WHEN e.event_product_id = LOWER(pp.sku) THEN 2
+            WHEN e.event_product_id = LOWER(pp.barcode) THEN 3
+          END,
+          pp.id
+      ) AS rn
+
+    FROM (
+      SELECT DISTINCT event_product_id
+      FROM all_events
+    ) e
+
+    JOIN `slikk-prod.slikkprodpublic.product_product` pp
+      ON e.event_product_id = LOWER(pp.skid)
+      OR e.event_product_id = LOWER(pp.sku)
+      OR e.event_product_id = LOWER(pp.barcode)
+  )
+  WHERE rn = 1
+),
+
+-- Map events to product IDs
+mapped_events AS (
+  SELECT
+    e.event_type,
+    e.event_date,
+    pm.product_id
+
+  FROM all_events e
+
+  JOIN product_mapping pm
+    ON e.event_product_id = pm.event_product_id
+),
+
+-- Calculate monthly PDP and Add-to-Cart counts
+monthly_metrics AS (
+  SELECT
+    product_id,
+
+    COUNTIF(
+      event_type = 'PDP'
+      AND event_date >= DATE '2026-09-01'
+      AND event_date < DATE '2026-10-01'
+    ) AS sep_pdp_views,
+
+    COUNTIF(
+      event_type = 'ATC'
+      AND event_date >= DATE '2026-09-01'
+      AND event_date < DATE '2026-10-01'
+    ) AS sep_add_to_cart,
+
+    COUNTIF(
+      event_type = 'PDP'
+      AND event_date >= DATE '2026-10-01'
+      AND event_date < DATE '2026-11-01'
+    ) AS oct_pdp_views,
+
+    COUNTIF(
+      event_type = 'ATC'
+      AND event_date >= DATE '2026-10-01'
+      AND event_date < DATE '2026-11-01'
+    ) AS oct_add_to_cart,
+
+    COUNTIF(
+      event_type = 'PDP'
+      AND event_date >= DATE '2026-11-01'
+    ) AS nov_pdp_views,
+
+    COUNTIF(
+      event_type = 'ATC'
+      AND event_date >= DATE '2026-11-01'
+    ) AS nov_add_to_cart
+
+  FROM mapped_events
+  GROUP BY product_id
+),
+
+tags AS (
+  SELECT
+    product_id,
+    ANY_VALUE(division) AS division,
+    ANY_VALUE(gender) AS gender,
+    ANY_VALUE(article_type) AS article_type
+
+  FROM `slikk-prod.slikkanalytics.silver_new_product_tags`
+  GROUP BY product_id
+)
+
+SELECT
+  pp.id AS product_id,
+  CAST(pp.sku AS STRING) AS sku,
+  nt.division,
+  COALESCE(pb.name, 'NA') AS brand,
+  nt.gender,
+  nt.article_type,
+
+  m.sep_pdp_views,
+  m.sep_add_to_cart,
+
+  m.oct_pdp_views,
+  m.oct_add_to_cart,
+
+  m.nov_pdp_views,
+  m.nov_add_to_cart
+
+FROM monthly_metrics m
+
+JOIN `slikk-prod.slikkprodpublic.product_product` pp
+  ON pp.id = m.product_id
+
+LEFT JOIN tags nt
+  ON nt.product_id = pp.id
+
+LEFT JOIN `slikk-prod.slikkprodpublic.product_brand` pb
+  ON pb.id = pp.brand_id
+
+ORDER BY
+  nt.division,
+  pb.name,
+  nt.article_type,
+  nt.gender,
+  pp.variant_id,
+  pp.sku;
