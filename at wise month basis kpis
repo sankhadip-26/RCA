@@ -1,0 +1,176 @@
+
+WITH date_range AS (
+  SELECT
+    DATE '2026-01-01' AS start_date,
+    DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 1 DAY) AS end_date
+),
+
+base AS (
+  SELECT
+    DATE(oo.create_date, 'Asia/Kolkata') AS order_date,
+    nt.article_type AS article_type,
+    SAFE_CAST(oi.quantity AS NUMERIC) AS quantity,
+    SAFE_CAST(oi.sp AS NUMERIC) AS sp_num,
+    SAFE_CAST(oi.mrp AS NUMERIC) AS mrp_num
+
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = oi.product_id
+
+  JOIN `slikk-prod.slikkprodpublic.product_brand` pb
+    ON pb.id = pp.brand_id
+
+  JOIN `slikk-prod.slikksilver.product_tags` pt
+    ON pt.product_id = pp.id
+
+  LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+    ON nt.product_id = pp.id
+
+  CROSS JOIN date_range d
+
+  WHERE
+    oo.status NOT IN ('OPEN', 'FAILED')
+    AND oo.delivery_type != 'EXCHANGE'
+    and lower(nt.division) = 'beauty'
+    AND DATE(oo.create_date, 'Asia/Kolkata')
+        BETWEEN d.start_date AND d.end_date
+),
+
+monthly_agg AS (
+  SELECT
+    article_type,
+
+    -- January
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 1, quantity, 0)) AS jan_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 1, sp_num * quantity, 0)) AS jan_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 1, mrp_num * quantity, 0)) AS jan_mrp_raw,
+
+    -- February
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 2, quantity, 0)) AS feb_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 2, sp_num * quantity, 0)) AS feb_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 2, mrp_num * quantity, 0)) AS feb_mrp_raw,
+
+    -- March
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 3, quantity, 0)) AS mar_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 3, sp_num * quantity, 0)) AS mar_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 3, mrp_num * quantity, 0)) AS mar_mrp_raw,
+
+    -- April
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 4, quantity, 0)) AS apr_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 4, sp_num * quantity, 0)) AS apr_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 4, mrp_num * quantity, 0)) AS apr_mrp_raw,
+
+    -- May
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 5, quantity, 0)) AS may_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 5, sp_num * quantity, 0)) AS may_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 5, mrp_num * quantity, 0)) AS may_mrp_raw,
+
+    -- June
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 6, quantity, 0)) AS jun_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 6, sp_num * quantity, 0)) AS jun_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 6, mrp_num * quantity, 0)) AS jun_mrp_raw,
+
+    -- July
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 7, quantity, 0)) AS jul_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 7, sp_num * quantity, 0)) AS jul_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 7, mrp_num * quantity, 0)) AS jul_mrp_raw,
+
+    -- August
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 8, quantity, 0)) AS aug_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 8, sp_num * quantity, 0)) AS aug_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 8, mrp_num * quantity, 0)) AS aug_mrp_raw,
+
+    -- September
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 9, quantity, 0)) AS sep_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 9, sp_num * quantity, 0)) AS sep_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 9, mrp_num * quantity, 0)) AS sep_mrp_raw,
+
+    -- October
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 10, quantity, 0)) AS oct_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 10, sp_num * quantity, 0)) AS oct_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 10, mrp_num * quantity, 0)) AS oct_mrp_raw,
+
+    -- November
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 11, quantity, 0)) AS nov_qty,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 11, sp_num * quantity, 0)) AS nov_gmv_raw,
+    SUM(IF(EXTRACT(MONTH FROM order_date) = 11, mrp_num * quantity, 0)) AS nov_mrp_raw
+
+  FROM base
+  GROUP BY article_type
+)
+
+SELECT
+  article_type,
+
+  -- January
+  jan_qty,
+  ROUND(jan_gmv_raw, 2) AS jan_gmv,
+  ROUND(SAFE_DIVIDE(jan_gmv_raw, jan_qty), 2) AS jan_asp,
+  ROUND((1 - SAFE_DIVIDE(jan_gmv_raw, jan_mrp_raw)) * 100, 2) AS jan_td,
+
+  -- February
+  feb_qty,
+  ROUND(feb_gmv_raw, 2) AS feb_gmv,
+  ROUND(SAFE_DIVIDE(feb_gmv_raw, feb_qty), 2) AS feb_asp,
+  ROUND((1 - SAFE_DIVIDE(feb_gmv_raw, feb_mrp_raw)) * 100, 2) AS feb_td,
+
+  -- March
+  mar_qty,
+  ROUND(mar_gmv_raw, 2) AS mar_gmv,
+  ROUND(SAFE_DIVIDE(mar_gmv_raw, mar_qty), 2) AS mar_asp,
+  ROUND((1 - SAFE_DIVIDE(mar_gmv_raw, mar_mrp_raw)) * 100, 2) AS mar_td,
+
+  -- April
+  apr_qty,
+  ROUND(apr_gmv_raw, 2) AS apr_gmv,
+  ROUND(SAFE_DIVIDE(apr_gmv_raw, apr_qty), 2) AS apr_asp,
+  ROUND((1 - SAFE_DIVIDE(apr_gmv_raw, apr_mrp_raw)) * 100, 2) AS apr_td,
+
+  -- May
+  may_qty,
+  ROUND(may_gmv_raw, 2) AS may_gmv,
+  ROUND(SAFE_DIVIDE(may_gmv_raw, may_qty), 2) AS may_asp,
+  ROUND((1 - SAFE_DIVIDE(may_gmv_raw, may_mrp_raw)) * 100, 2) AS may_td,
+
+  -- June
+  jun_qty,
+  ROUND(jun_gmv_raw, 2) AS jun_gmv,
+  ROUND(SAFE_DIVIDE(jun_gmv_raw, jun_qty), 2) AS jun_asp,
+  ROUND((1 - SAFE_DIVIDE(jun_gmv_raw, jun_mrp_raw)) * 100, 2) AS jun_td,
+
+  -- July
+  jul_qty,
+  ROUND(jul_gmv_raw, 2) AS jul_gmv,
+  ROUND(SAFE_DIVIDE(jul_gmv_raw, jul_qty), 2) AS jul_asp,
+  ROUND((1 - SAFE_DIVIDE(jul_gmv_raw, jul_mrp_raw)) * 100, 2) AS jul_td,
+
+  -- August
+  aug_qty,
+  ROUND(aug_gmv_raw, 2) AS aug_gmv,
+  ROUND(SAFE_DIVIDE(aug_gmv_raw, aug_qty), 2) AS aug_asp,
+  ROUND((1 - SAFE_DIVIDE(aug_gmv_raw, aug_mrp_raw)) * 100, 2) AS aug_td,
+
+  -- September
+  sep_qty,
+  ROUND(sep_gmv_raw, 2) AS sep_gmv,
+  ROUND(SAFE_DIVIDE(sep_gmv_raw, sep_qty), 2) AS sep_asp,
+  ROUND((1 - SAFE_DIVIDE(sep_gmv_raw, sep_mrp_raw)) * 100, 2) AS sep_td,
+
+  -- October
+  oct_qty,
+  ROUND(oct_gmv_raw, 2) AS oct_gmv,
+  ROUND(SAFE_DIVIDE(oct_gmv_raw, oct_qty), 2) AS oct_asp,
+  ROUND((1 - SAFE_DIVIDE(oct_gmv_raw, oct_mrp_raw)) * 100, 2) AS oct_td,
+
+  -- November
+  nov_qty,
+  ROUND(nov_gmv_raw, 2) AS nov_gmv,
+  ROUND(SAFE_DIVIDE(nov_gmv_raw, nov_qty), 2) AS nov_asp,
+  ROUND((1 - SAFE_DIVIDE(nov_gmv_raw, nov_mrp_raw)) * 100, 2) AS nov_td
+
+FROM monthly_agg
+ORDER BY article_type;
